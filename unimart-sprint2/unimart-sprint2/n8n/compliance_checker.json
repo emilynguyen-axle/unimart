@@ -1,0 +1,140 @@
+{
+  "name": "UniMart Sprint 2 — AI Compliance Checker",
+  "description": "US-05: Pre-publish compliance scanning. Triggered when a listing is saved. Checks for allergen disclosures, food-safety violations, and policy breaches. Writes result to compliance_checks table.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "unimart-compliance-check",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "🔔 Webhook: Listing Saved",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "id": "webhook-compliance",
+      "_comment": "Call this webhook from Lovable when a seller saves or submits a listing."
+    },
+    {
+      "parameters": {
+        "functionCode": "// ── AI Compliance Checker ────────────────────────────────────\n// Checks a listing against food-safety, allergen, and policy rules\n\nconst body = $json.body;\nconst listing = body.listing || body;\n\nconst flags = [];\n\n// ── ALLERGEN RULES ───────────────────────────────────────────\nconst MAJOR_ALLERGENS = [\n  'peanuts', 'tree nuts', 'milk', 'eggs', 'wheat', 'soy', 'fish',\n  'shellfish', 'sesame', 'gluten', 'lactose', 'dairy'\n];\n\nconst descLower = (listing.description || '').toLowerCase();\nconst titleLower = (listing.title || '').toLowerCase();\nconst allText = titleLower + ' ' + descLower;\nconst declaredAllergens = (listing.allergens || []).map(a => a.toLowerCase());\n\nMAJOR_ALLERGENS.forEach(allergen => {\n  if (allText.includes(allergen) && !declaredAllergens.includes(allergen)) {\n    flags.push({\n      rule: 'ALLERGEN_UNDECLARED',\n      severity: 'High',\n      field: 'allergens',\n      message: `Allergen '${allergen}' appears in description but is not declared in the allergen list.`\n    });\n  }\n});\n\nif ((listing.vertical === 'Meal Kits' || listing.vertical === 'Food Delivery') && declaredAllergens.length === 0) {\n  flags.push({\n    rule: 'ALLERGEN_LIST_MISSING',\n    severity: 'High',\n    field: 'allergens',\n    message: 'Food listings must include an allergen declaration, even if allergen-free.'\n  });\n}\n\n// ── FOOD SAFETY RULES ────────────────────────────────────────\nif (listing.vertical === 'Food Delivery' || listing.vertical === 'Meal Kits') {\n  if (!listing.ingredients || listing.ingredients.length === 0) {\n    flags.push({\n      rule: 'INGREDIENTS_MISSING',\n      severity: 'High',\n      field: 'ingredients',\n      message: 'Food and meal kit listings must include a full ingredient list.'\n    });\n  }\n  \n  const prohibitedTerms = ['raw meat', 'unpasteurised', 'raw milk', 'raw egg'];\n  prohibitedTerms.forEach(term => {\n    if (allText.includes(term)) {\n      flags.push({\n        rule: 'FOOD_SAFETY_RISK',\n        severity: 'High',\n        field: 'description',\n        message: `Listing mentions '${term}' — food safety handling instructions are required.`\n      });\n    }\n  });\n}\n\n// ── POLICY RULES ─────────────────────────────────────────────\nif (!listing.title || listing.title.trim().length < 5) {\n  flags.push({ rule: 'TITLE_TOO_SHORT', severity: 'Medium', field: 'title', message: 'Listing title must be at least 5 characters.' });\n}\n\nif (!listing.price || listing.price <= 0) {\n  flags.push({ rule: 'PRICE_MISSING', severity: 'High', field: 'price', message: 'Listing must have a valid price greater than zero.' });\n}\n\nif (!listing.description || listing.description.trim().length < 20) {\n  flags.push({ rule: 'DESCRIPTION_TOO_SHORT', severity: 'Medium', field: 'description', message: 'Listing description must be at least 20 characters.' });\n}\n\nconst prohibitedPolicyTerms = ['guaranteed cure', 'clinically proven', 'FDA approved', 'lose weight fast'];\nprohibitedPolicyTerms.forEach(term => {\n  if (allText.includes(term.toLowerCase())) {\n    flags.push({ rule: 'MISLEADING_CLAIM', severity: 'High', field: 'description', message: `Prohibited marketing claim detected: '${term}'.` });\n  }\n});\n\n// ── RESULT ────────────────────────────────────────────────────\nconst highFlags = flags.filter(f => f.severity === 'High');\nconst status    = flags.length === 0 ? 'Passed' : highFlags.length > 0 ? 'Failed' : 'Flagged';\n\nreturn [{\n  json: {\n    listing_id:   listing.id || null,\n    seller_id:    listing.seller_id || null,\n    check_type:   'pre-publish',\n    status,\n    flags,\n    flag_count:   flags.length,\n    high_count:   highFlags.length,\n    checked_at:   new Date().toISOString(),\n    listing_title: listing.title,\n    vertical:     listing.vertical\n  }\n}];"
+      },
+      "name": "🔍 Run Compliance Rules",
+      "type": "n8n-nodes-base.function",
+      "position": [480, 300],
+      "id": "run-rules"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/compliance_checks",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "listing_id",  "value": "={{ $json.listing_id }}" },
+            { "name": "seller_id",   "value": "={{ $json.seller_id }}" },
+            { "name": "check_type",  "value": "pre-publish" },
+            { "name": "status",      "value": "={{ $json.status }}" },
+            { "name": "flags",       "value": "={{ JSON.stringify($json.flags) }}" },
+            { "name": "checked_at",  "value": "={{ $json.checked_at }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "💾 Save Check to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [720, 300],
+      "id": "save-check"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/listings?id=eq.={{ $node['🔍 Run Compliance Rules'].json.listing_id }}",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "compliance_status", "value": "={{ $node['🔍 Run Compliance Rules'].json.status }}" },
+            { "name": "compliance_flags",  "value": "={{ JSON.stringify($node['🔍 Run Compliance Rules'].json.flags) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📝 Update Listing Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [720, 460],
+      "id": "update-listing"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $node['🔍 Run Compliance Rules'].json.status }}", "operation": "notEqual", "value2": "Passed" }]
+        }
+      },
+      "name": "🚨 Any Flags?",
+      "type": "n8n-nodes-base.if",
+      "position": [960, 300],
+      "id": "check-flags"
+    },
+    {
+      "parameters": {
+        "functionCode": "const result = $node['🔍 Run Compliance Rules'].json;\nconst flagList = result.flags.map(f => `• [${f.severity}] ${f.rule}: ${f.message}`).join('\\n');\n\nreturn [{\n  json: {\n    response: {\n      status: result.status,\n      listing_title: result.listing_title,\n      flag_count: result.flag_count,\n      flags: result.flags,\n      message: result.status === 'Failed'\n        ? `Your listing '${result.listing_title}' has ${result.high_count} critical compliance issue(s) and cannot be published until resolved.`\n        : `Your listing '${result.listing_title}' has ${result.flag_count} compliance warning(s). Please review before publishing.`,\n      flag_summary: flagList\n    }\n  }\n}];"
+      },
+      "name": "📋 Format Seller Response",
+      "type": "n8n-nodes-base.function",
+      "position": [1200, 220],
+      "id": "format-response"
+    },
+    {
+      "parameters": {
+        "functionCode": "const result = $node['🔍 Run Compliance Rules'].json;\nreturn [{ json: { response: { status: 'Passed', listing_title: result.listing_title, message: `Your listing '${result.listing_title}' passed all compliance checks and is ready to publish.`, flags: [] } } }];"
+      },
+      "name": "✅ Format Pass Response",
+      "type": "n8n-nodes-base.function",
+      "position": [1200, 420],
+      "id": "format-pass"
+    }
+  ],
+  "connections": {
+    "🔔 Webhook: Listing Saved": { "main": [[{ "node": "🔍 Run Compliance Rules", "type": "main", "index": 0 }]] },
+    "🔍 Run Compliance Rules":   { "main": [[{ "node": "💾 Save Check to Supabase", "type": "main", "index": 0 }, { "node": "📝 Update Listing Status", "type": "main", "index": 0 }, { "node": "🚨 Any Flags?", "type": "main", "index": 0 }]] },
+    "🚨 Any Flags?": { "main": [[{ "node": "📋 Format Seller Response", "type": "main", "index": 0 }], [{ "node": "✅ Format Pass Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["UniMart", "Sprint 2", "US-05", "Compliance", "AI"],
+  "_meta": {
+    "test_payload": {
+      "listing": {
+        "id": "test-listing-001",
+        "seller_id": "test-seller-001",
+        "title": "Peanut Butter Granola Bar",
+        "description": "A delicious granola bar.",
+        "price": 4.99,
+        "vertical": "Shop",
+        "allergens": [],
+        "ingredients": ["oats", "honey", "peanut butter"]
+      }
+    },
+    "expected_result": "Should flag ALLERGEN_UNDECLARED for peanuts and DESCRIPTION_TOO_SHORT"
+  }
+}

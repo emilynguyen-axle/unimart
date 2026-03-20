@@ -1,0 +1,172 @@
+{
+  "name": "UniMart — Sprint Velocity Reporter",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 8 * * 1-5" }]
+        }
+      },
+      "name": "Daily 8am Trigger (Mon–Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "id": "trigger-daily"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/sprints/1/velocity",
+        "options": {}
+      },
+      "name": "Fetch Sprint 1 Velocity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 300],
+      "id": "fetch-velocity"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/kanban/tickets?sprint=1&status=in_progress",
+        "options": {}
+      },
+      "name": "Fetch In-Progress Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 460],
+      "id": "fetch-in-progress"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/risks?category=Project",
+        "options": {}
+      },
+      "name": "Fetch Project Risks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 620],
+      "id": "fetch-risks"
+    },
+    {
+      "parameters": {
+        "jsCode": "const velocity = $('Fetch Sprint 1 Velocity').first().json;\nconst tickets = $('Fetch In-Progress Tickets').all().map(i => i.json);\nconst risks = $('Fetch Project Risks').all().map(i => i.json);\n\nconst staleTickets = tickets.filter(t => {\n  const updated = new Date(t.updated_at);\n  const now = new Date();\n  const diffHours = (now - updated) / (1000 * 60 * 60);\n  return diffHours > 48;\n});\n\nconst highRisks = risks.filter(r => r.overall_rating === 'high' && !r.is_resolved);\n\nconst completionPct = velocity.points_total > 0\n  ? Math.round((velocity.points_completed / velocity.points_total) * 100)\n  : 0;\n\nreturn [{\n  json: {\n    date: new Date().toISOString().split('T')[0],\n    sprint: velocity.sprint_number,\n    sprint_name: velocity.sprint_name,\n    tickets_done: velocity.tickets_done,\n    tickets_total: velocity.tickets_total,\n    points_completed: velocity.points_completed,\n    points_total: velocity.points_total,\n    completion_pct: completionPct,\n    stale_ticket_count: staleTickets.length,\n    stale_tickets: staleTickets.map(t => ({ id: t.id, title: t.title, squad: t.squad, last_updated: t.updated_at })),\n    high_risks_open: highRisks.length,\n    report_text: `📊 *UniMart Sprint ${velocity.sprint_number} Daily Report*\\n\\n` +\n      `✅ Tickets Done: ${velocity.tickets_done}/${velocity.tickets_total}\\n` +\n      `⚡ Story Points: ${velocity.points_completed}/${velocity.points_total} (${completionPct}%)\\n` +\n      (staleTickets.length > 0 ? `⚠️ Stale Tickets (>48h no update): ${staleTickets.length}\\n${staleTickets.map(t => `  - ${t.title} [${t.squad}]`).join('\\n')}\\n` : '') +\n      (highRisks.length > 0 ? `🔴 Open High Risks: ${highRisks.length}\\n` : '✅ No critical risks open\\n')\n  }\n}];\n"
+      },
+      "name": "Build Velocity Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 460],
+      "id": "build-report"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.stale_ticket_count }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "Has Stale Tickets?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [960, 460],
+      "id": "check-stale"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.report_text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Post to Slack — #unimart-sprint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1200, 340],
+      "id": "post-slack"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SLACK_WEBHOOK_ALERTS_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "=⚠️ *Stale Ticket Alert* — {{ $json.stale_ticket_count }} tickets have not been updated in 48+ hours.\\n\\n{{ $json.stale_tickets.map(t => `• ${t.title} [${t.squad}] — last updated ${t.last_updated}`).join('\\n') }}\\n\\nPlease update your tickets before today's stand-up."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Post Stale Alert to #pm-alerts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1200, 580],
+      "id": "post-stale-alert"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/docs",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "slug", "value": "=velocity-report-{{ $json.date }}" },
+            { "name": "title", "value": "=Sprint {{ $json.sprint }} Velocity Report — {{ $json.date }}" },
+            { "name": "content", "value": "={{ $json.report_text }}" },
+            { "name": "category", "value": "wiki" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Save Report to Project Wiki",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1200, 460],
+      "id": "save-wiki"
+    }
+  ],
+  "connections": {
+    "Daily 8am Trigger (Mon–Fri)": {
+      "main": [[
+        { "node": "Fetch Sprint 1 Velocity", "type": "main", "index": 0 },
+        { "node": "Fetch In-Progress Tickets", "type": "main", "index": 0 },
+        { "node": "Fetch Project Risks", "type": "main", "index": 0 }
+      ]]
+    },
+    "Fetch Sprint 1 Velocity": { "main": [[{ "node": "Build Velocity Report", "type": "main", "index": 0 }]] },
+    "Fetch In-Progress Tickets": { "main": [[{ "node": "Build Velocity Report", "type": "main", "index": 0 }]] },
+    "Fetch Project Risks": { "main": [[{ "node": "Build Velocity Report", "type": "main", "index": 0 }]] },
+    "Build Velocity Report": {
+      "main": [[
+        { "node": "Has Stale Tickets?", "type": "main", "index": 0 },
+        { "node": "Post to Slack — #unimart-sprint", "type": "main", "index": 0 },
+        { "node": "Save Report to Project Wiki", "type": "main", "index": 0 }
+      ]]
+    },
+    "Has Stale Tickets?": {
+      "main": [
+        [{ "node": "Post Stale Alert to #pm-alerts", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["sprint-1", "velocity", "automation"],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-19T00:00:00.000Z",
+  "versionId": "sprint1-v1"
+}

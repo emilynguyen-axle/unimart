@@ -1,0 +1,201 @@
+{
+  "name": "UniMart Sprint 1 — Velocity Reporting",
+  "description": "US-02: Automated sprint velocity reporting. Queries Supabase for ticket status, calculates velocity metrics, and posts a daily summary to Slack (or email). Triggers every morning at 9 AM.",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1-5"
+            }
+          ]
+        }
+      },
+      "name": "⏰ Daily Trigger (9 AM Mon–Fri)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [240, 300],
+      "id": "trigger-1"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/sprint_tickets",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "sprint", "value": "eq.1" },
+            { "name": "select", "value": "id,title,squad,priority,status,updated_at" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📦 Fetch Sprint 1 Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [480, 300],
+      "id": "fetch-tickets"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/empathy_maps",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "user_group,is_complete" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "🗺️ Fetch Empathy Map Progress",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [480, 460],
+      "id": "fetch-empathy"
+    },
+    {
+      "parameters": {
+        "functionCode": "// ── Velocity Calculator ──────────────────────────────────────\nconst tickets = $node[\"📦 Fetch Sprint 1 Tickets\"].json;\nconst empathyMaps = $node[\"🗺️ Fetch Empathy Map Progress\"].json;\n\n// Ticket metrics\nconst total       = tickets.length;\nconst done        = tickets.filter(t => t.status === 'Done').length;\nconst inProgress  = tickets.filter(t => t.status === 'In Progress').length;\nconst review      = tickets.filter(t => t.status === 'Review').length;\nconst backlog     = tickets.filter(t => t.status === 'Backlog' || t.status === 'To Do').length;\nconst velocityPct = total > 0 ? Math.round((done / total) * 100) : 0;\n\n// By squad\nconst squads = ['UX Research', 'Core Dev', 'AI Integration', 'Growth/Marketing', 'Legal/Compliance'];\nconst squadMetrics = squads.map(squad => {\n  const squadTickets = tickets.filter(t => t.squad === squad);\n  const squadDone    = squadTickets.filter(t => t.status === 'Done').length;\n  return { squad, total: squadTickets.length, done: squadDone };\n});\n\n// Empathy map progress\nconst mapsTotal    = empathyMaps.length;\nconst mapsComplete = empathyMaps.filter(m => m.is_complete).length;\nconst mapsPct      = mapsTotal > 0 ? Math.round((mapsComplete / mapsTotal) * 100) : 0;\n\n// Stale tickets (updated > 2 days ago and not Done)\nconst twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);\nconst stale = tickets.filter(t => \n  t.status !== 'Done' && \n  new Date(t.updated_at) < twoDaysAgo\n);\n\nconst today = new Date().toLocaleDateString('en-GB', {\n  weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'\n});\n\n// Build Slack message blocks\nconst slackMessage = {\n  blocks: [\n    {\n      type: \"header\",\n      text: { type: \"plain_text\", text: \"📊 UniMart Sprint 1 — Daily Velocity Report\", emoji: true }\n    },\n    {\n      type: \"context\",\n      elements: [{ type: \"mrkdwn\", text: `*${today}*  ·  Weeks 1–2  ·  EP-01` }]\n    },\n    { type: \"divider\" },\n    {\n      type: \"section\",\n      fields: [\n        { type: \"mrkdwn\", text: `*Total Tickets*\\n${total}` },\n        { type: \"mrkdwn\", text: `*✅ Done*\\n${done} (${velocityPct}%)` },\n        { type: \"mrkdwn\", text: `*🔄 In Progress*\\n${inProgress}` },\n        { type: \"mrkdwn\", text: `*👀 In Review*\\n${review}` },\n        { type: \"mrkdwn\", text: `*📋 Backlog/To Do*\\n${backlog}` },\n        { type: \"mrkdwn\", text: `*🗺️ Empathy Maps*\\n${mapsComplete}/${mapsTotal} complete (${mapsPct}%)` }\n      ]\n    },\n    { type: \"divider\" },\n    {\n      type: \"section\",\n      text: { type: \"mrkdwn\", text: \"*Squad Breakdown*\" }\n    },\n    {\n      type: \"section\",\n      text: {\n        type: \"mrkdwn\",\n        text: squadMetrics.map(s => `• *${s.squad}*: ${s.done}/${s.total} done`).join('\\n')\n      }\n    }\n  ]\n};\n\nif (stale.length > 0) {\n  slackMessage.blocks.push({ type: \"divider\" });\n  slackMessage.blocks.push({\n    type: \"section\",\n    text: {\n      type: \"mrkdwn\",\n      text: `*⚠️ Stale Tickets (${stale.length}) — not updated in 2+ days:*\\n` +\n            stale.slice(0, 5).map(t => `• [${t.squad}] ${t.title}`).join('\\n') +\n            (stale.length > 5 ? `\\n_...and ${stale.length - 5} more_` : '')\n    }\n  });\n}\n\nreturn [{\n  json: {\n    slackMessage,\n    metrics: { total, done, inProgress, review, backlog, velocityPct, mapsComplete, mapsTotal, staleCount: stale.length },\n    squadMetrics,\n    reportDate: today,\n    sprint: 1\n  }\n}];"
+      },
+      "name": "⚙️ Calculate Velocity Metrics",
+      "type": "n8n-nodes-base.function",
+      "position": [720, 380],
+      "id": "calc-velocity"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "#unimart-sprint-velocity",
+        "blocksUi": "={{ JSON.stringify($json.slackMessage.blocks) }}",
+        "otherOptions": {}
+      },
+      "name": "📨 Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "position": [960, 280],
+      "id": "post-slack"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/velocity_snapshots",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "sprint",        "value": "={{ $json.sprint }}" },
+            { "name": "report_date",   "value": "={{ new Date().toISOString() }}" },
+            { "name": "metrics",       "value": "={{ JSON.stringify($json.metrics) }}" },
+            { "name": "squad_metrics", "value": "={{ JSON.stringify($json.squadMetrics) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "💾 Save Snapshot to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 460],
+      "id": "save-snapshot"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.metrics.staleCount }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "🚨 Any Stale Tickets?",
+      "type": "n8n-nodes-base.if",
+      "position": [960, 640],
+      "id": "check-stale"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "#unimart-pm-alerts",
+        "text": "⚠️ *UniMart Sprint 1 Alert* — {{ $json.metrics.staleCount }} stale ticket(s) detected. Review the board and unblock within 24 hours per Working Agreements.",
+        "otherOptions": {}
+      },
+      "name": "🔔 Alert PM: Stale Tickets",
+      "type": "n8n-nodes-base.slack",
+      "position": [1200, 580],
+      "id": "alert-pm"
+    }
+  ],
+  "connections": {
+    "⏰ Daily Trigger (9 AM Mon–Fri)": {
+      "main": [[
+        { "node": "📦 Fetch Sprint 1 Tickets",  "type": "main", "index": 0 },
+        { "node": "🗺️ Fetch Empathy Map Progress", "type": "main", "index": 0 }
+      ]]
+    },
+    "📦 Fetch Sprint 1 Tickets": {
+      "main": [[{ "node": "⚙️ Calculate Velocity Metrics", "type": "main", "index": 0 }]]
+    },
+    "🗺️ Fetch Empathy Map Progress": {
+      "main": [[{ "node": "⚙️ Calculate Velocity Metrics", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Calculate Velocity Metrics": {
+      "main": [[
+        { "node": "📨 Post to Slack",          "type": "main", "index": 0 },
+        { "node": "💾 Save Snapshot to Supabase", "type": "main", "index": 0 },
+        { "node": "🚨 Any Stale Tickets?",     "type": "main", "index": 0 }
+      ]]
+    },
+    "🚨 Any Stale Tickets?": {
+      "main": [
+        [{ "node": "🔔 Alert PM: Stale Tickets", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "tags": ["UniMart", "Sprint 1", "US-02", "Velocity"],
+  "_meta": {
+    "setup_instructions": [
+      "1. Import this JSON into n8n via Workflows > Import from file.",
+      "2. Replace YOUR_PROJECT and YOUR_SUPABASE_ANON_KEY with real values.",
+      "3. Create a Slack credential in n8n (oAuth2) for your workspace.",
+      "4. Create channels: #unimart-sprint-velocity and #unimart-pm-alerts in Slack.",
+      "5. Run schema addition below in Supabase to add velocity_snapshots table.",
+      "6. Activate the workflow — it will run at 9 AM Mon–Fri automatically.",
+      "7. You can also trigger it manually via the Execute Workflow button."
+    ],
+    "supabase_extra_table": "CREATE TABLE IF NOT EXISTS public.velocity_snapshots (id uuid primary key default uuid_generate_v4(), sprint integer, report_date timestamptz, metrics jsonb, squad_metrics jsonb, created_at timestamptz default now());"
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "name": "UniMart — Workshop Findings Aggregator (US-01)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "workshop-findings",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook — Receive Workshop Findings",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 300],
+      "id": "webhook-findings",
+      "webhookId": "unimart-workshop-findings"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and normalise incoming workshop findings payload\n// Expected: { user_group, findings: [{quadrant, content, is_pain_point}], facilitator_id, session_date }\n\nconst body = $input.first().json.body;\n\nif (!body.user_group) throw new Error('user_group is required');\nif (!Array.isArray(body.findings) || body.findings.length === 0) throw new Error('findings array is required and must be non-empty');\n\nconst validQuadrants = ['says', 'thinks', 'does', 'feels'];\nfor (const f of body.findings) {\n  if (!validQuadrants.includes(f.quadrant)) throw new Error(`Invalid quadrant: ${f.quadrant}`);\n  if (!f.content || f.content.trim().length === 0) throw new Error('Each finding must have content');\n}\n\nconst painPoints = body.findings.filter(f => f.is_pain_point);\n\nreturn [{\n  json: {\n    user_group: body.user_group,\n    facilitator_id: body.facilitator_id ?? null,\n    session_date: body.session_date ?? new Date().toISOString().split('T')[0],\n    findings: body.findings,\n    pain_point_count: painPoints.length,\n    total_findings: body.findings.length,\n    validated: painPoints.length >= 3\n  }\n}];\n"
+      },
+      "name": "Validate & Normalise Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "id": "validate-payload"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/user_groups?name=eq.{{ encodeURIComponent($json.user_group) }}&select=id,name",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": { "response": { "responseFormat": "json" } }
+        },
+        "headers": {
+          "parameters": [
+            { "name": "apikey", "value": "={{ $env.SUPABASE_ANON_KEY }}" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}" }
+          ]
+        }
+      },
+      "name": "Lookup User Group ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [700, 300],
+      "id": "lookup-user-group"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "name": "User Group Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [940, 300],
+      "id": "check-group"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/empathy-maps",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "user_group_id", "value": "={{ $('Lookup User Group ID').first().json[0].id }}" },
+            { "name": "facilitator_id", "value": "={{ $('Validate & Normalise Payload').first().json.facilitator_id }}" },
+            { "name": "session_date", "value": "={{ $('Validate & Normalise Payload').first().json.session_date }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Create Empathy Map",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1180, 200],
+      "id": "create-map"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fan out findings into individual API calls\nconst mapId = $('Create Empathy Map').first().json.id;\nconst findings = $('Validate & Normalise Payload').first().json.findings;\n\nreturn findings.map(f => ({\n  json: {\n    map_id: mapId,\n    quadrant: f.quadrant,\n    content: f.content,\n    is_pain_point: f.is_pain_point ?? false\n  }\n}));\n"
+      },
+      "name": "Fan Out Findings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1420, 200],
+      "id": "fan-out"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.REPLIT_API_URL }}/api/empathy-maps/{{ $json.map_id }}/entries",
+        "method": "POST",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "quadrant", "value": "={{ $json.quadrant }}" },
+            { "name": "content", "value": "={{ $json.content }}" },
+            { "name": "is_pain_point", "value": "={{ $json.is_pain_point }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Save Each Finding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1660, 200],
+      "id": "save-finding"
+    },
+    {
+      "parameters": {
+        "jsCode": "const validated = $('Validate & Normalise Payload').first().json.validated;\nconst userGroup = $('Validate & Normalise Payload').first().json.user_group;\nconst painPointCount = $('Validate & Normalise Payload').first().json.pain_point_count;\nconst totalFindings = $('Validate & Normalise Payload').first().json.total_findings;\n\nreturn [{\n  json: {\n    success: true,\n    user_group: userGroup,\n    findings_saved: totalFindings,\n    pain_points: painPointCount,\n    meets_dod: validated,\n    message: validated\n      ? `✅ Empathy map for ${userGroup} saved with ${totalFindings} findings (${painPointCount} pain points). Meets DoD (≥3 pain points).`\n      : `⚠️ Empathy map for ${userGroup} saved but only ${painPointCount} pain points identified. DoD requires ≥3. Please complete the session.`\n  }\n}];\n"
+      },
+      "name": "Build Success Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 200],
+      "id": "build-summary"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "text", "value": "={{ $json.message }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Notify Slack — #unimart-hcd",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2140, 200],
+      "id": "notify-slack"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: $('Build Success Summary').first().json.message }) }}"
+      },
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2380, 200],
+      "id": "respond-webhook"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": false, \"error\": \"User group not found\" }",
+        "options": { "responseCode": 404 }
+      },
+      "name": "Respond 404 — Group Not Found",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1180, 440],
+      "id": "respond-404"
+    }
+  ],
+  "connections": {
+    "Webhook — Receive Workshop Findings": { "main": [[{ "node": "Validate & Normalise Payload", "type": "main", "index": 0 }]] },
+    "Validate & Normalise Payload": { "main": [[{ "node": "Lookup User Group ID", "type": "main", "index": 0 }]] },
+    "Lookup User Group ID": { "main": [[{ "node": "User Group Found?", "type": "main", "index": 0 }]] },
+    "User Group Found?": {
+      "main": [
+        [{ "node": "Create Empathy Map", "type": "main", "index": 0 }],
+        [{ "node": "Respond 404 — Group Not Found", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Empathy Map": { "main": [[{ "node": "Fan Out Findings", "type": "main", "index": 0 }]] },
+    "Fan Out Findings": { "main": [[{ "node": "Save Each Finding", "type": "main", "index": 0 }]] },
+    "Save Each Finding": { "main": [[{ "node": "Build Success Summary", "type": "main", "index": 0 }]] },
+    "Build Success Summary": {
+      "main": [[
+        { "node": "Notify Slack — #unimart-hcd", "type": "main", "index": 0 },
+        { "node": "Respond to Webhook", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["sprint-1", "hcd", "empathy-map", "us-01"],
+  "triggerCount": 1
+}

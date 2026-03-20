@@ -1,0 +1,228 @@
+{
+  "name": "UniMart Sprint 1 — Workshop Findings Aggregator",
+  "description": "US-01: When an empathy map is saved as complete in Supabase, this workflow triggers, formats the findings, and appends them to the project wiki (Notion or a Supabase wiki_entries table). Also flags if fewer than 3 pain points are captured.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "unimart-empathy-map-saved",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "🔔 Webhook: Empathy Map Saved",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "id": "webhook-1",
+      "_comment": "Trigger URL: POST https://YOUR_N8N_INSTANCE/webhook/unimart-empathy-map-saved. Call this from your Lovable EmpathyMapDashboard.jsx saveMap() function after a successful Supabase upsert."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.body.is_complete }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "✅ Is Map Complete?",
+      "type": "n8n-nodes-base.if",
+      "position": [480, 300],
+      "id": "check-complete"
+    },
+    {
+      "parameters": {
+        "functionCode": "// ── Format Workshop Findings for Wiki ──────────────────────\nconst body       = $json.body;\nconst userGroup  = body.user_group;\nconst mapData    = body.map_data;\n\nconst fmt = (arr) => (arr || []).filter(v => v && v.trim()).map((v, i) => `  ${i + 1}. ${v.trim()}`).join('\\n');\n\nconst painPoints = (mapData.pain_points || []).filter(v => v && v.trim());\nconst hasMinPainPoints = painPoints.length >= 3;\n\nconst wikiEntry = {\n  title:      `Empathy Map — ${userGroup}`,\n  user_group: userGroup,\n  sprint:     1,\n  entry_type: 'empathy_map',\n  content: [\n    `# Empathy Map: ${userGroup}`,\n    `_Sprint 1 · US-01 · Completed: ${new Date().toLocaleDateString('en-GB')}_`,\n    '',\n    '## 💭 Thinks',\n    fmt(mapData.thinks),\n    '',\n    '## ❤️ Feels',\n    fmt(mapData.feels),\n    '',\n    '## 💬 Says',\n    fmt(mapData.says),\n    '',\n    '## ⚡ Does',\n    fmt(mapData.does),\n    '',\n    '## 😣 Pain Points',\n    fmt(mapData.pain_points),\n    '',\n    '## 🎯 Gains',\n    fmt(mapData.gains),\n  ].join('\\n'),\n  is_approved:       false,\n  pain_point_count:  painPoints.length,\n  meets_min_criteria: hasMinPainPoints,\n  created_at: new Date().toISOString(),\n};\n\nreturn [{ json: { wikiEntry, userGroup, hasMinPainPoints, painPointCount: painPoints.length } }];"
+      },
+      "name": "📝 Format Wiki Entry",
+      "type": "n8n-nodes-base.function",
+      "position": [720, 220],
+      "id": "format-entry"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/wiki_entries",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "resolution=merge-duplicates" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "title",              "value": "={{ $json.wikiEntry.title }}" },
+            { "name": "user_group",         "value": "={{ $json.wikiEntry.user_group }}" },
+            { "name": "sprint",             "value": "={{ $json.wikiEntry.sprint }}" },
+            { "name": "entry_type",         "value": "={{ $json.wikiEntry.entry_type }}" },
+            { "name": "content",            "value": "={{ $json.wikiEntry.content }}" },
+            { "name": "pain_point_count",   "value": "={{ $json.wikiEntry.pain_point_count }}" },
+            { "name": "meets_min_criteria", "value": "={{ $json.wikiEntry.meets_min_criteria }}" },
+            { "name": "is_approved",        "value": "false" },
+            { "name": "created_at",         "value": "={{ $json.wikiEntry.created_at }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "💾 Save to Wiki (Supabase)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 220],
+      "id": "save-wiki"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.hasMinPainPoints }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "name": "⚠️ Fewer than 3 Pain Points?",
+      "type": "n8n-nodes-base.if",
+      "position": [960, 400],
+      "id": "check-pain-points"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "#unimart-ux-research",
+        "text": "⚠️ *UniMart HCD Alert* — Empathy map for *{{ $json.userGroup }}* was marked complete but only has {{ $json.painPointCount }}/3 minimum pain points. Please add more before Sprint 1 Review. (DoD requires ≥3 per group.)",
+        "otherOptions": {}
+      },
+      "name": "🔔 Slack: Warn UX Team",
+      "type": "n8n-nodes-base.slack",
+      "position": [1200, 340],
+      "id": "slack-warn"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "#unimart-ux-research",
+        "text": "✅ *Empathy map saved* for *{{ $json.userGroup }}* ({{ $json.painPointCount }} pain points captured). Added to project wiki. Pending PM review.",
+        "otherOptions": {}
+      },
+      "name": "📣 Slack: Notify Map Saved",
+      "type": "n8n-nodes-base.slack",
+      "position": [1200, 500],
+      "id": "slack-notify"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/empathy_maps",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "select", "value": "user_group,is_complete" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📊 Check Overall Completion",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1200, 660],
+      "id": "check-completion"
+    },
+    {
+      "parameters": {
+        "functionCode": "const maps = $json;\nconst total    = maps.length;\nconst complete = maps.filter(m => m.is_complete).length;\nconst pct      = Math.round((complete / total) * 100);\nconst allDone  = complete === total;\n\nreturn [{ json: { total, complete, pct, allDone } }];"
+      },
+      "name": "📈 Calc Completion %",
+      "type": "n8n-nodes-base.function",
+      "position": [1440, 660],
+      "id": "calc-completion"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.allDone }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "🏁 All 11 Maps Done?",
+      "type": "n8n-nodes-base.if",
+      "position": [1680, 660],
+      "id": "check-all-done"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "channel": "#unimart-sprint-velocity",
+        "text": "🎉 *UniMart Sprint 1 Milestone* — All 11 empathy maps complete! US-01 Acceptance Criteria met. Ready for stakeholder sign-off in Sprint 1 Review. @channel",
+        "otherOptions": {}
+      },
+      "name": "🎉 Celebrate: All Maps Done",
+      "type": "n8n-nodes-base.slack",
+      "position": [1920, 600],
+      "id": "celebrate"
+    }
+  ],
+  "connections": {
+    "🔔 Webhook: Empathy Map Saved": {
+      "main": [[{ "node": "✅ Is Map Complete?", "type": "main", "index": 0 }]]
+    },
+    "✅ Is Map Complete?": {
+      "main": [
+        [{ "node": "📝 Format Wiki Entry", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "📝 Format Wiki Entry": {
+      "main": [[
+        { "node": "💾 Save to Wiki (Supabase)",   "type": "main", "index": 0 },
+        { "node": "⚠️ Fewer than 3 Pain Points?", "type": "main", "index": 0 },
+        { "node": "📊 Check Overall Completion",  "type": "main", "index": 0 }
+      ]]
+    },
+    "⚠️ Fewer than 3 Pain Points?": {
+      "main": [
+        [{ "node": "🔔 Slack: Warn UX Team",      "type": "main", "index": 0 }],
+        [{ "node": "📣 Slack: Notify Map Saved",  "type": "main", "index": 0 }]
+      ]
+    },
+    "📊 Check Overall Completion": {
+      "main": [[{ "node": "📈 Calc Completion %", "type": "main", "index": 0 }]]
+    },
+    "📈 Calc Completion %": {
+      "main": [[{ "node": "🏁 All 11 Maps Done?", "type": "main", "index": 0 }]]
+    },
+    "🏁 All 11 Maps Done?": {
+      "main": [
+        [{ "node": "🎉 Celebrate: All Maps Done", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": ["UniMart", "Sprint 1", "US-01", "HCD", "Workshop"],
+  "_meta": {
+    "webhook_integration": "In EmpathyMapDashboard.jsx, after the Supabase upsert succeeds, add: await fetch('YOUR_N8N_WEBHOOK_URL', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user_group: selectedGroup, is_complete: isComplete(mapData), map_data: mapData }) });",
+    "supabase_extra_table": "CREATE TABLE IF NOT EXISTS public.wiki_entries (id uuid primary key default uuid_generate_v4(), title text, user_group text, sprint integer, entry_type text, content text, pain_point_count integer default 0, meets_min_criteria boolean default false, is_approved boolean default false, created_at timestamptz default now(), updated_at timestamptz default now());"
+  }
+}

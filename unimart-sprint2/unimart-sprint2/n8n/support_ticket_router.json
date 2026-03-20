@@ -1,0 +1,96 @@
+{
+  "name": "UniMart Sprint 2 — Support Ticket Router",
+  "description": "US-06: Automatically routes incoming support tickets to the correct vertical resolution flow and saves them to Supabase.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "unimart-support-ticket",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "🎧 Webhook: New Support Ticket",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "id": "webhook-support"
+    },
+    {
+      "parameters": {
+        "functionCode": "const body = $json.body;\nconst vertical    = body.vertical;\nconst issue_type  = body.issue_type;\n\n// SLA mapping per vertical + issue type\nconst SLA = {\n  'Shop':          { 'Wrong Item': 48, 'Late Delivery': 72, 'Refund Request': 48, 'Other': 72 },\n  'Meal Kits':     { 'Missing Ingredient': 24, 'Late Delivery': 24, 'Wrong Item': 24, 'Other': 48 },\n  'Food Delivery': { 'Cold Food': 4, 'Late Delivery': 4, 'Wrong Item': 4, 'Other': 8 }\n};\n\n// AI suggested responses\nconst AI_RESPONSES = {\n  'Wrong Item':         'Hi there, I\\'m sorry you received the wrong item. I\\'ve raised a replacement — it will arrive within the SLA window. No need to return the incorrect item.',\n  'Missing Ingredient': 'Hi there, I\\'m sorry about the missing ingredient in your meal kit. I\\'ve arranged a full refund for the affected portion within 3–5 business days.',\n  'Cold Food':          'Hi there, I\\'m sorry your food arrived cold. I\\'ve issued a full refund which will appear within 24 hours.',\n  'Late Delivery':      'Hi there, I apologise for the delay. I\\'ve applied a delivery credit to your account as a goodwill gesture.',\n  'Refund Request':     'Hi there, I\\'ve reviewed and approved your refund request. You\\'ll see the amount within 3–5 business days.',\n  'Other':              'Hi there, thank you for reaching out. I\\'m reviewing your case and will update you shortly.'\n};\n\n// Resolution flow per vertical\nconst RESOLUTION_FLOWS = {\n  'Shop':          'shop_returns_flow',\n  'Meal Kits':     'meal_kit_missing_ingredient_flow',\n  'Food Delivery': 'food_delivery_dispute_flow'\n};\n\nconst sla_hours       = SLA[vertical]?.[issue_type] || SLA[vertical]?.['Other'] || 48;\nconst ai_response     = AI_RESPONSES[issue_type] || AI_RESPONSES['Other'];\nconst resolution_flow = RESOLUTION_FLOWS[vertical] || 'generic_support_flow';\n\nreturn [{\n  json: {\n    customer_email:       body.customer_email,\n    vertical,\n    issue_type,\n    status:               'Open',\n    sla_hours,\n    ai_suggested_response: ai_response,\n    resolution_flow,\n    raw: body\n  }\n}];"
+      },
+      "name": "🔀 Route & Enrich Ticket",
+      "type": "n8n-nodes-base.function",
+      "position": [480, 300],
+      "id": "route-ticket"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/support_tickets",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=representation" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "customer_email",        "value": "={{ $json.customer_email }}" },
+            { "name": "vertical",              "value": "={{ $json.vertical }}" },
+            { "name": "issue_type",            "value": "={{ $json.issue_type }}" },
+            { "name": "status",                "value": "Open" },
+            { "name": "sla_hours",             "value": "={{ $json.sla_hours }}" },
+            { "name": "ai_suggested_response", "value": "={{ $json.ai_suggested_response }}" },
+            { "name": "resolution_flow",       "value": "={{ $json.resolution_flow }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "💾 Save Ticket to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [720, 300],
+      "id": "save-ticket"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $node['🔀 Route & Enrich Ticket'].json.sla_hours }}", "operation": "smallerEqual", "value2": "4" }]
+        }
+      },
+      "name": "⚡ Is Urgent (≤4h SLA)?",
+      "type": "n8n-nodes-base.if",
+      "position": [960, 300],
+      "id": "check-urgent"
+    },
+    {
+      "parameters": {
+        "functionCode": "const t = $node['🔀 Route & Enrich Ticket'].json;\nreturn [{ json: { response: { ticket_created: true, vertical: t.vertical, issue_type: t.issue_type, sla_hours: t.sla_hours, resolution_flow: t.resolution_flow, ai_suggested_response: t.ai_suggested_response, priority: t.sla_hours <= 4 ? 'URGENT' : 'STANDARD', message: `Ticket created. Routed to ${t.resolution_flow}. SLA: ${t.sla_hours}h.` } } }];"
+      },
+      "name": "📤 Format Webhook Response",
+      "type": "n8n-nodes-base.function",
+      "position": [1200, 300],
+      "id": "format-webhook-response"
+    }
+  ],
+  "connections": {
+    "🎧 Webhook: New Support Ticket": { "main": [[{ "node": "🔀 Route & Enrich Ticket", "type": "main", "index": 0 }]] },
+    "🔀 Route & Enrich Ticket":       { "main": [[{ "node": "💾 Save Ticket to Supabase", "type": "main", "index": 0 }, { "node": "⚡ Is Urgent (≤4h SLA)?", "type": "main", "index": 0 }]] },
+    "⚡ Is Urgent (≤4h SLA)?":        { "main": [[{ "node": "📤 Format Webhook Response", "type": "main", "index": 0 }], [{ "node": "📤 Format Webhook Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["UniMart", "Sprint 2", "US-06", "Support", "Routing"],
+  "_meta": {
+    "test_payload": {
+      "customer_email": "testcustomer@example.com",
+      "vertical": "Food Delivery",
+      "issue_type": "Cold Food"
+    },
+    "expected_result": "Routes to food_delivery_dispute_flow, SLA 4h, marked URGENT"
+  }
+}

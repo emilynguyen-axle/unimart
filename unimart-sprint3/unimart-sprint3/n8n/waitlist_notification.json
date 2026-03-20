@@ -1,0 +1,117 @@
+{
+  "name": "UniMart Sprint 3 — Waitlist Notification",
+  "description": "US-11: Triggered when someone joins the waitlist. Sends a welcome notification and tracks referral counts.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "unimart-waitlist-join",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "🎯 Webhook: Waitlist Join",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "id": "webhook-waitlist"
+    },
+    {
+      "parameters": {
+        "functionCode": "const body = $json.body;\nconst email = body.email;\nconst referral_code = body.referral_code;\nconst position = body.position;\nconst referred_by = body.referred_by;\n\nconst referralUrl = `https://YOUR_LOVABLE_URL?ref=${referral_code}`;\n\nconst emailContent = {\n  to: email,\n  subject: \"You're on the UniMart waitlist! 🎉\",\n  html: `\n    <div style=\"font-family: sans-serif; max-width: 560px; margin: 0 auto; background: #090B12; color: #E2E4EF; padding: 40px; border-radius: 16px;\">\n      <h1 style=\"color: #6C5CE7; font-size: 28px; margin-bottom: 8px;\">You're in! 🚀</h1>\n      <p style=\"color: #8890AA; font-size: 16px;\">Thanks for joining the UniMart waitlist. You're <strong style=\"color: #fff;\">#${position}</strong> in line.</p>\n      <div style=\"background: #0D0F1C; border: 1px solid #252840; border-radius: 12px; padding: 20px; margin: 24px 0;\">\n        <p style=\"color: #6B7090; font-size: 13px; margin-bottom: 8px;\">Move up the list by referring friends:</p>\n        <div style=\"background: #090B12; border: 1px solid #6C5CE733; border-radius: 8px; padding: 12px 16px; font-family: monospace; color: #A29BFE; font-size: 14px;\">${referralUrl}</div>\n      </div>\n      <p style=\"color: #6B7090; font-size: 13px;\">Each friend who joins moves you <strong style=\"color: #A29BFE;\">5 places forward</strong>.</p>\n      <hr style=\"border-color: #181B2E; margin: 24px 0;\" />\n      <p style=\"color: #4A4F6A; font-size: 12px;\">UniMart · Unsubscribe at any time</p>\n    </div>\n  `\n};\n\nreturn [{ json: { email, referral_code, position, referred_by, referralUrl, emailContent } }];"
+      },
+      "name": "📧 Prepare Welcome Email",
+      "type": "n8n-nodes-base.function",
+      "position": [480, 300],
+      "id": "prepare-email"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/notification_log",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "type",    "value": "waitlist_welcome" },
+            { "name": "channel", "value": "email" },
+            { "name": "title",   "value": "You're on the UniMart waitlist!" },
+            { "name": "body",    "value": "={{ $json.emailContent.html }}" },
+            { "name": "sent",    "value": "true" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "💾 Log Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [720, 300],
+      "id": "log-notification"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{ $json.referred_by }}", "operation": "isNotEmpty" }]
+        }
+      },
+      "name": "👥 Has Referrer?",
+      "type": "n8n-nodes-base.if",
+      "position": [720, 480],
+      "id": "check-referrer"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/waitlist?referral_code=eq.={{ $json.referred_by }}",
+        "method": "PATCH",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "referral_count", "value": "={{ $json.referral_count + 1 }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "⬆️ Increment Referrer Count",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 400],
+      "id": "increment-referral"
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { response: { success: true, message: 'Welcome email queued and referral tracked.', position: $json.position, referral_url: $json.referralUrl } } }];"
+      },
+      "name": "✅ Return Response",
+      "type": "n8n-nodes-base.function",
+      "position": [1200, 300],
+      "id": "return-response"
+    }
+  ],
+  "connections": {
+    "🎯 Webhook: Waitlist Join":   { "main": [[{ "node": "📧 Prepare Welcome Email", "type": "main", "index": 0 }]] },
+    "📧 Prepare Welcome Email":    { "main": [[{ "node": "💾 Log Notification", "type": "main", "index": 0 }, { "node": "👥 Has Referrer?", "type": "main", "index": 0 }]] },
+    "👥 Has Referrer?":            { "main": [[{ "node": "⬆️ Increment Referrer Count", "type": "main", "index": 0 }], [{ "node": "✅ Return Response", "type": "main", "index": 0 }]] },
+    "⬆️ Increment Referrer Count": { "main": [[{ "node": "✅ Return Response", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["UniMart", "Sprint 3", "US-11", "Waitlist"],
+  "_meta": {
+    "test_payload": { "email": "test@example.com", "referral_code": "abc12345", "position": 42, "referred_by": "" },
+    "note": "Connect the webhook URL to the WaitlistLanding.jsx joinWaitlist() function after Supabase insert succeeds."
+  }
+}

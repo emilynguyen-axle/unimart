@@ -1,0 +1,127 @@
+{
+  "name": "UniMart Sprint 4 — Sentiment Aggregator",
+  "description": "US-12: Aggregates feedback from support tickets, usability tests, and in-app feedback into the sentiment_feedback table. Runs daily at 8 AM.",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "cronExpression", "expression": "0 8 * * 1-5" }] }
+      },
+      "name": "⏰ Daily Trigger (8 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "position": [240, 300],
+      "id": "trigger-sentiment"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/support_tickets?status=eq.Resolved&select=id,vertical,issue_type,ai_suggested_response,updated_at",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📥 Fetch Resolved Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [480, 200],
+      "id": "fetch-tickets"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/usability_results?sprint=eq.4&select=*",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📥 Fetch Usability Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [480, 400],
+      "id": "fetch-usability"
+    },
+    {
+      "parameters": {
+        "functionCode": "// ── Sentiment Analyser ───────────────────────────────────────\nconst rawTickets   = $node['📥 Fetch Resolved Tickets'].json;\nconst rawUsability = $node['📥 Fetch Usability Results'].json;\n\nconst tickets   = Array.isArray(rawTickets)   ? rawTickets   : (rawTickets.data   || []);\nconst usability = Array.isArray(rawUsability) ? rawUsability : (rawUsability.data || []);\n\nconst sentimentItems = [];\n\n// Analyse support tickets — resolved quickly = positive, escalated = negative\ntickets.forEach(t => {\n  sentimentItems.push({\n    source:         'support_ticket',\n    vertical:       t.vertical,\n    sentiment:      'positive',\n    score:          0.6,\n    feedback_text:  `${t.issue_type} resolved successfully`,\n    category:       t.issue_type?.toLowerCase().replace(/ /g,'_'),\n    sprint:         4\n  });\n});\n\n// Analyse usability results\nusability.forEach(u => {\n  const sentiment = u.success && u.difficulty_rating <= 2 ? 'positive' :\n                    u.success && u.difficulty_rating <= 3 ? 'neutral'  : 'negative';\n  const score     = u.success ? (u.difficulty_rating <= 2 ? 0.8 : 0.3) : -0.6;\n  sentimentItems.push({\n    source:         'usability_test',\n    vertical:       null,\n    sentiment,\n    score,\n    feedback_text:  `${u.persona} task: \"${u.task}\" — ${u.success ? 'succeeded' : 'failed'} (difficulty: ${u.difficulty_rating}/5)`,\n    category:       u.task?.toLowerCase().substring(0, 30),\n    sprint:         4\n  });\n});\n\nconst positive = sentimentItems.filter(s => s.sentiment === 'positive').length;\nconst negative = sentimentItems.filter(s => s.sentiment === 'negative').length;\nconst total    = sentimentItems.length;\nconst avgScore = total > 0 ? (sentimentItems.reduce((s, i) => s + i.score, 0) / total).toFixed(2) : 0;\n\nreturn [{ json: { sentimentItems, summary: { total, positive, negative, neutral: total - positive - negative, avgScore } } }];"
+      },
+      "name": "📊 Analyse Sentiment",
+      "type": "n8n-nodes-base.function",
+      "position": [720, 300],
+      "id": "analyse-sentiment"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/sentiment_feedback",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" },
+            { "name": "Prefer",        "value": "return=minimal" }
+          ]
+        },
+        "sendBody": true,
+        "bodyContentType": "json",
+        "jsonBody": "={{ JSON.stringify($json.sentimentItems) }}",
+        "options": {}
+      },
+      "name": "💾 Save Sentiment to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 300],
+      "id": "save-sentiment"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/velocity_snapshots",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "sprint",      "value": "4" },
+            { "name": "report_date", "value": "={{ new Date().toISOString() }}" },
+            { "name": "metrics",     "value": "={{ JSON.stringify($json.summary) }}" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "📈 Save Daily Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 480],
+      "id": "save-snapshot"
+    }
+  ],
+  "connections": {
+    "⏰ Daily Trigger (8 AM)":      { "main": [[{ "node": "📥 Fetch Resolved Tickets",  "type": "main", "index": 0 }, { "node": "📥 Fetch Usability Results", "type": "main", "index": 0 }]] },
+    "📥 Fetch Resolved Tickets":    { "main": [[{ "node": "📊 Analyse Sentiment", "type": "main", "index": 0 }]] },
+    "📥 Fetch Usability Results":   { "main": [[{ "node": "📊 Analyse Sentiment", "type": "main", "index": 0 }]] },
+    "📊 Analyse Sentiment":         { "main": [[{ "node": "💾 Save Sentiment to Supabase", "type": "main", "index": 0 }, { "node": "📈 Save Daily Snapshot", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["UniMart", "Sprint 4", "US-12", "Sentiment"],
+  "_meta": {
+    "note": "Add a Merge node between the two fetch nodes and Analyse Sentiment — same pattern as Sprint 1 velocity workflow."
+  }
+}

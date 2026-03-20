@@ -1,0 +1,89 @@
+{
+  "name": "UniMart Sprint 3 — Fake Review Detection",
+  "description": "US-07: Detects suspicious reviews and quarantines them before they appear on listings.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "unimart-review-submitted",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "name": "⭐ Webhook: Review Submitted",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300],
+      "id": "webhook-review"
+    },
+    {
+      "parameters": {
+        "functionCode": "const body = $json.body;\nconst review = body.review || body;\nconst flags = [];\nlet risk_score = 0;\n\n// ── Rule 1: Extremely short review ──\nif ((review.review_text || '').trim().length < 10) {\n  flags.push('REVIEW_TOO_SHORT');\n  risk_score += 30;\n}\n\n// ── Rule 2: All caps ──\nif (review.review_text && review.review_text === review.review_text.toUpperCase() && review.review_text.length > 5) {\n  flags.push('ALL_CAPS');\n  risk_score += 20;\n}\n\n// ── Rule 3: Extreme rating with no context ──\nif ((review.rating === 5 || review.rating === 1) && (review.review_text || '').trim().length < 20) {\n  flags.push('EXTREME_RATING_NO_CONTEXT');\n  risk_score += 25;\n}\n\n// ── Rule 4: Spam patterns ──\nconst spamPatterns = ['click here', 'buy now', 'discount code', 'promo', 'http', 'www.', '.com'];\nconst textLower = (review.review_text || '').toLowerCase();\nspamPatterns.forEach(p => {\n  if (textLower.includes(p)) { flags.push('SPAM_PATTERN'); risk_score += 35; }\n});\n\n// ── Rule 5: Unverified purchase ──\nif (!review.verified_purchase) {\n  flags.push('UNVERIFIED_PURCHASE');\n  risk_score += 15;\n}\n\nconst isFake   = risk_score >= 50;\nconst status   = isFake ? 'Quarantined' : 'Cleared';\n\nreturn [{ json: { review, flags, risk_score, status, isFake } }];"
+      },
+      "name": "🔍 Analyse Review",
+      "type": "n8n-nodes-base.function",
+      "position": [480, 300],
+      "id": "analyse-review"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{ $json.isFake }}", "value2": true }]
+        }
+      },
+      "name": "🚨 Suspicious?",
+      "type": "n8n-nodes-base.if",
+      "position": [720, 300],
+      "id": "check-suspicious"
+    },
+    {
+      "parameters": {
+        "url": "https://YOUR_PROJECT.supabase.co/rest/v1/review_flags",
+        "method": "POST",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey",        "value": "YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Authorization", "value": "Bearer YOUR_SUPABASE_ANON_KEY" },
+            { "name": "Content-Type",  "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "reviewer_email", "value": "={{ $json.review.reviewer_email }}" },
+            { "name": "review_text",    "value": "={{ $json.review.review_text }}" },
+            { "name": "rating",         "value": "={{ $json.review.rating }}" },
+            { "name": "flag_reasons",   "value": "={{ JSON.stringify($json.flags) }}" },
+            { "name": "status",         "value": "Quarantined" }
+          ]
+        },
+        "options": {}
+      },
+      "name": "🚫 Quarantine Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [960, 200],
+      "id": "quarantine-review"
+    },
+    {
+      "parameters": {
+        "functionCode": "return [{ json: { response: { approved: true, message: 'Review passed checks and has been published.' } } }];"
+      },
+      "name": "✅ Approve Review",
+      "type": "n8n-nodes-base.function",
+      "position": [960, 420],
+      "id": "approve-review"
+    }
+  ],
+  "connections": {
+    "⭐ Webhook: Review Submitted": { "main": [[{ "node": "🔍 Analyse Review", "type": "main", "index": 0 }]] },
+    "🔍 Analyse Review":            { "main": [[{ "node": "🚨 Suspicious?", "type": "main", "index": 0 }]] },
+    "🚨 Suspicious?":               { "main": [[{ "node": "🚫 Quarantine Review", "type": "main", "index": 0 }], [{ "node": "✅ Approve Review", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["UniMart", "Sprint 3", "US-07", "Reviews", "Trust"],
+  "_meta": {
+    "test_payload_fake":  { "review": { "review_text": "BUY NOW!!!", "rating": 5, "verified_purchase": false, "reviewer_email": "bot@spam.com" } },
+    "test_payload_legit": { "review": { "review_text": "Really enjoyed this meal kit — the instructions were clear and the food was fresh.", "rating": 4, "verified_purchase": true, "reviewer_email": "real@user.com" } }
+  }
+}

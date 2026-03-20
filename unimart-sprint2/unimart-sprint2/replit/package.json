@@ -1,0 +1,19 @@
+{
+  "name": "unimart-sprint2-api",
+  "version": "2.0.0",
+  "description": "UniMart Sprint 2 — Replit Backend API (AI Architecture + Seller + Support)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": { "node": ">=18.0.0" }
+}
